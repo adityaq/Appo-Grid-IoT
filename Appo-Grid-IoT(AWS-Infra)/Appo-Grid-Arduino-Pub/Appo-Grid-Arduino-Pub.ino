@@ -1,0 +1,170 @@
+#include <SoftwareSerial.h> // Libary to read the Gps
+#include <PubSubClient.h> // Libary to Publish the data to Mqtt
+#include <ESP8266WiFi.h> // Libary to Connect to the Internet World(Important)
+#include <TinyGPS++.h> // Libary to process and records the Gps data
+#include <Wire.h> // Libary to record the Accelerometer Sensor
+#include<math.h>  // Math libary for float value for Raspberry Pi
+  SoftwareSerial Gps(4, 5);
+  TinyGPSPlus gps;
+    const char* ssid     = "Novaders"; // Your SSID of Router or Internet
+    const char* password = "Tricons@123"; // Your Password of Router or Internet
+    const char* mqtt_server = "192.168.1.6"; // Your Raspberry Pi Ip
+      WiFiClient espClient;
+      PubSubClient client(espClient);
+        long accelX, accelY, accelZ, rotX, rotY, rotZ;
+        float gForceX, gForceY, gForceZ, gyroX, gyroY, gyroZ, n;
+        char res[20];
+        char gps1[20];
+        char gps2[20];
+void reverse(char *str, int len) { // Float to Json convertation
+    int i=0, j=len-1, temp; 
+    while (i<j) { 
+        temp = str[i]; 
+        str[i] = str[j]; 
+        str[j] = temp; 
+        i++; j--; }}
+int intToStr(int x, char str[], int d) { // Float to Json convertation
+    int i = 0; 
+    while (x) { 
+        str[i++] = (x%10) + '0'; 
+        x = x/10; }
+    while (i < d) 
+    str[i++] = '0'; 
+    reverse(str, i); 
+    str[i] = '\0'; 
+    return i; } 
+void ftoa(float n, char *res, int afterpoint) { // Float to Json convertation(Main F)
+    // Extract integer part 
+    int ipart = (int)n; 
+  
+    // Extract floating part 
+    float fpart = n - (float)ipart; 
+  
+    // convert integer part to string 
+    int i = intToStr(ipart, res, 0); 
+  
+    // check for display option after point 
+    if (afterpoint != 0) 
+    { 
+        res[i] = '.';  // add dot 
+  
+        // Get the value of fraction part upto given no. 
+        // of points after dot. The third parameter is needed 
+        // to handle cases like 233.007 
+        fpart = fpart * pow(10, afterpoint); 
+  
+        intToStr((int)fpart, res + i + 1, afterpoint); 
+    } 
+} 
+void setupMPU(){ // Setup the Wire libary to read the data from Accelerometer sensor
+  Wire.beginTransmission(0b1101000); //This is the I2C address of the MPU (b1101000/b1101001 for AC0 low/high datasheet sec. 9.2)
+  Wire.write(0x6B); //Accessing the register 6B - Power Management (Sec. 4.28)
+  Wire.write(0b00000000); //Setting SLEEP register to 0. (Required; see Note on p. 9)
+  Wire.endTransmission();  
+  Wire.beginTransmission(0b1101000); //I2C address of the MPU
+  Wire.write(0x1B); //Accessing the register 1B - Gyroscope Configuration (Sec. 4.4) 
+  Wire.write(0x00000000); //Setting the gyro to full scale +/- 250deg./s 
+  Wire.endTransmission(); 
+  Wire.beginTransmission(0b1101000); //I2C address of the MPU
+  Wire.write(0x1C); //Accessing the register 1C - Acccelerometer Configuration (Sec. 4.5) 
+  Wire.write(0b00000000); //Setting the accel to +/- 2g
+  Wire.endTransmission(); }
+void recordAccelRegisters() { // Recording Accel Data
+  Wire.beginTransmission(0b1101000); //I2C address of the MPU
+  Wire.write(0x3B); //Starting register for Accel Readings
+  Wire.endTransmission();
+  Wire.requestFrom(0b1101000,6); //Request Accel Registers (3B - 40)
+  while(Wire.available() < 6);
+  accelX = Wire.read()<<8|Wire.read(); //Store first two bytes into accelX
+  accelY = Wire.read()<<8|Wire.read(); //Store middle two bytes into accelY
+  accelZ = Wire.read()<<8|Wire.read(); //Store last two bytes into accelZ
+  processAccelData();}
+void processAccelData(){ // Process Accel Data for Velocity
+  gForceX = accelX / 16384.0*10;
+  gForceY = accelY / 16384.0*10; 
+  gForceZ = accelZ / 16384.0*10;}
+void recordGyroRegisters() { // Recording Gypo Data
+  Wire.beginTransmission(0b1101000); //I2C address of the MPU
+  Wire.write(0x43); //Starting register for Gyro Readings
+  Wire.endTransmission();
+  Wire.requestFrom(0b1101000,6); //Request Gyro Registers (43 - 48)
+  while(Wire.available() < 6);
+  gyroX = Wire.read()<<8|Wire.read(); //Store first two bytes into accelX
+  gyroY = Wire.read()<<8|Wire.read(); //Store middle two bytes into accelY
+  gyroZ = Wire.read()<<8|Wire.read(); //Store last two bytes into accelZ
+  processGyroData();}
+void processGyroData() { // Processing Gyro Data
+  rotX = gyroX / 131.0;
+  rotY = gyroY / 131.0; 
+  rotZ = gyroZ / 131.0;}
+void setup_wifi() { // Connecting to Wifi 
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");}
+  Serial.println("");
+  Serial.println("WiFi connected");}
+void reconnect() { // Connecting to Mqtt (Raspberry Pi)
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+      if (client.connect("esp8266")) {
+      Serial.println("connected");
+      }else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);}}}
+void Mqttdata(){ // Mqtt Data to cloud with Json
+ recordAccelRegisters();
+ recordGyroRegisters();
+ String Json = "{";
+  Json += "\"DB\":";
+  Json += (analogRead(A0))-28;
+  Json += ",";
+  Json += "\"Ip\":";
+  Json += "\"84:F3:EB:94:9E:73\"";
+  Json += ",";
+  Json += "\"V\":";
+  Json += "0"; // Making the result in the Json
+  Json += res;
+  Json += ",";
+  Json += "\"Lat\":";
+  Json += gps1;
+  Json += ",";
+  Json += "\"Lon\":";
+  Json += gps2;
+  Json += "}";
+  if (!client.connected()) {
+    reconnect(   );}
+  client.loop();
+  char attributes[100];
+  Json.toCharArray( attributes, 100 );
+  client.publish( "test", attributes );
+  Serial.print("Json = ");
+  Serial.println( attributes );
+  delay(300);}
+void setup() { // Setup the things for All
+  Serial.begin(115200);
+  Gps.begin(9600);
+  Wire.begin(D7, D6); // Sda and then Scl
+  setupMPU();
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+  pinMode(A0,INPUT);}
+void loop() { // Infinite loop for All
+    float n = ((sqrt(((rotX * 0.01 )*(rotX * 0.01)) + ((rotY * 0.01)*(rotY * 0.01)) + ((rotZ * 0.01)*(rotZ * 0.01))))/1000)+0.000; 
+    ftoa(n, res, 6); 
+    ftoa(gps.location.lat(), gps1, 6);
+    ftoa(gps.location.lng(), gps2, 6);
+     Mqttdata();
+  //Serial.println(res);
+  while (Gps.available() > 0)
+    if (gps.encode(Gps.read()))
+     
+  if (millis() > 5000 && gps.charsProcessed() < 10){
+    Serial.println(F("No GPS detected: check wiring."));
+    while(true);}}
